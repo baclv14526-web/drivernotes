@@ -15,7 +15,8 @@ import java.util.UUID
 enum class Sort(val label: String) { NEWEST("Mới nhất"), NAME("Tên A→Z"), HOUSE("Số nhà") }
 
 val PRESET_TAGS = listOf("Đang sửa chữa", "Hỏng đèn giao thông", "Tắc đường", "Ngập nước",
-    "Cấm đường", "Đường một chiều", "Dễ đón khách", "Camera phạt nguội")
+    "Cấm đường", "Đường một chiều", "Đường hẹp", "Cấm rẽ trái", "Cấm rẽ phải",
+    "Đường 1km", "Đường 5km", "Đường 10km", "Đường 20km", "Dễ đón khách", "Camera phạt nguội")
 
 /** Bỏ dấu tiếng Việt để tìm kiếm không cần gõ dấu. */
 fun String.fold(): String = Normalizer.normalize(lowercase(), Normalizer.Form.NFD)
@@ -44,10 +45,10 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     suspend fun load(id: Long) = dao.get(id)
 
     /** images: đường dẫn file cũ hoặc content:// uri mới; ảnh mới được copy vào bộ nhớ app. */
-    fun save(id: Long, name: String, house: String, note: String, tags: List<String>, images: List<String>, done: () -> Unit) =
+    fun save(id: Long, name: String, house: String, note: String, tags: List<String>, lat: Double?, lng: Double?, images: List<String>, done: () -> Unit) =
         viewModelScope.launch {
             val paths = withContext(Dispatchers.IO) { images.map { if (it.startsWith("content://")) copyIn(Uri.parse(it)) else it } }
-            val s = Street(if (id > 0) id else 0, name.trim(), house.trim(), note.trim(), tags.joinToString(","))
+            val s = Street(if (id > 0) id else 0, name.trim(), house.trim(), note.trim(), tags.joinToString(","), lat = lat, lng = lng)
             val sid = if (id > 0) { dao.update(s); dao.clearImages(id); id } else dao.insert(s)
             dao.addImages(paths.map { StreetImage(streetId = sid, path = it) })
             done()

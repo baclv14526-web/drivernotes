@@ -1,6 +1,14 @@
 package com.driver.notes
 
+import android.Manifest
+import androidx.activity.enableEdgeToEdge
+import android.annotation.SuppressLint
 import android.os.Bundle
+import android.widget.Toast
+import androidx.compose.ui.platform.LocalContext
+import com.google.android.gms.location.LocationServices
+import com.google.android.gms.location.Priority
+import java.util.Locale
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.*
 import androidx.activity.result.PickVisualMediaRequest
@@ -29,11 +37,18 @@ class MainActivity : ComponentActivity() {
     private val vm: MainViewModel by viewModels()
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        enableEdgeToEdge()
         setContent {
-            MaterialTheme {
+            var mode by rememberSaveable { mutableStateOf(getSharedPreferences("settings", MODE_PRIVATE).getInt("theme", 0)) }
+            AppTheme(mode) {
                 var editId by rememberSaveable { mutableStateOf<Long?>(null) } // null = danh sách, 0 = thêm mới
                 val cur = editId
-                if (cur == null) ListScreen(vm) { editId = it } else EditScreen(vm, cur) { editId = null }
+                val onTheme = {
+                    mode = (mode + 1) % 3
+                    getSharedPreferences("settings", MODE_PRIVATE).edit().putInt("theme", mode).apply()
+                    Toast.makeText(this@MainActivity, "Giao diện: " + listOf("Theo hệ thống", "Sáng", "Tối")[mode], Toast.LENGTH_SHORT).show()
+                }
+                if (cur == null) ListScreen(vm, mode, onTheme) { editId = it } else EditScreen(vm, cur) { editId = null }
             }
         }
     }
@@ -41,14 +56,20 @@ class MainActivity : ComponentActivity() {
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
 @Composable
-fun ListScreen(vm: MainViewModel, open: (Long) -> Unit) {
+fun ListScreen(vm: MainViewModel, themeMode: Int, onTheme: () -> Unit, open: (Long) -> Unit) {
     val items by vm.items.collectAsStateWithLifecycle()
     val q by vm.query.collectAsStateWithLifecycle()
     val sort by vm.sort.collectAsStateWithLifecycle()
     val tag by vm.tagFilter.collectAsStateWithLifecycle()
     var menu by remember { mutableStateOf(false) }
+    val ctx = LocalContext.current
+    var viewer by remember { mutableStateOf<Pair<List<String>, Int>?>(null) }
+    viewer?.let { ImageViewer(it.first, it.second) { viewer = null } }
     Scaffold(
         topBar = { TopAppBar(title = { Text("Sổ tay tài xế") }, actions = {
+            IconButton(onTheme) {
+                Icon(when (themeMode) { 1 -> Icons.Default.LightMode; 2 -> Icons.Default.DarkMode; else -> Icons.Default.BrightnessAuto }, "Đổi giao diện")
+            }
             Box {
                 TextButton(onClick = { menu = true }) { Icon(Icons.Default.Sort, null); Spacer(Modifier.width(4.dp)); Text(sort.label) }
                 DropdownMenu(menu, { menu = false }) {
@@ -78,11 +99,15 @@ fun ListScreen(vm: MainViewModel, open: (Long) -> Unit) {
                                     Text(w.street.name, style = MaterialTheme.typography.titleMedium)
                                     if (w.street.houseNumber.isNotBlank()) Text("Số nhà: ${w.street.houseNumber}", style = MaterialTheme.typography.bodySmall)
                                 }
+                                val la = w.street.lat; val ln = w.street.lng
+                                if (la != null && ln != null) IconButton({ openMaps(ctx, la, ln, w.street.name) }) { Icon(Icons.Default.Map, "Mở Google Maps") }
                                 IconButton({ vm.delete(w) }) { Icon(Icons.Default.Delete, "Xóa") }
                             }
                             if (w.street.note.isNotBlank()) Text(w.street.note, maxLines = 2, style = MaterialTheme.typography.bodyMedium)
                             if (w.images.isNotEmpty()) LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.padding(top = 8.dp)) {
-                                items(w.images) { AsyncImage(it.path, null, Modifier.size(72.dp).clip(RoundedCornerShape(8.dp)), contentScale = ContentScale.Crop) }
+                                itemsIndexed(w.images) { i, im ->
+                                    AsyncImage(im.path, null, Modifier.size(72.dp).clip(RoundedCornerShape(8.dp)).clickable { viewer = w.images.map { it.path } to i }, contentScale = ContentScale.Crop)
+                                }
                             }
                             FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                                 w.street.tagList().forEach { AssistChip({}, { Text("#$it") }) }
@@ -96,33 +121,68 @@ fun ListScreen(vm: MainViewModel, open: (Long) -> Unit) {
 }
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
+@SuppressLint("MissingPermission")
 @Composable
 fun EditScreen(vm: MainViewModel, id: Long, close: () -> Unit) {
     var name by remember { mutableStateOf("") }
     var house by remember { mutableStateOf("") }
     var note by remember { mutableStateOf("") }
     var custom by remember { mutableStateOf("") }
+    var coord by remember { mutableStateOf("") }
+    var locating by remember { mutableStateOf(false) }
+    var viewer by remember { mutableStateOf<Pair<List<String>, Int>?>(null) }
+    val ctx = LocalContext.current
     val tags = remember { mutableStateListOf<String>() }
     val images = remember { mutableStateListOf<String>() }
     LaunchedEffect(id) {
         if (id > 0) vm.load(id)?.let { w ->
             name = w.street.name; house = w.street.houseNumber; note = w.street.note
+            val la = w.street.lat; val ln = w.street.lng
+            if (la != null && ln != null) coord = String.format(Locale.US, "%.6f, %.6f", la, ln)
             tags.addAll(w.street.tagList()); images.addAll(w.images.map { it.path })
         }
     }
     val picker = rememberLauncherForActivityResult(ActivityResultContracts.PickMultipleVisualMedia()) { uris ->
         images.addAll(uris.map { it.toString() })
     }
+    val locate = {
+        locating = true
+        LocationServices.getFusedLocationProviderClient(ctx)
+            .getCurrentLocation(Priority.PRIORITY_HIGH_ACCURACY, null)
+            .addOnSuccessListener { l ->
+                locating = false
+                if (l != null) coord = String.format(Locale.US, "%.6f, %.6f", l.latitude, l.longitude)
+                else Toast.makeText(ctx, "Chưa lấy được vị trí, hãy bật GPS", Toast.LENGTH_SHORT).show()
+            }
+            .addOnFailureListener { locating = false; Toast.makeText(ctx, "Lỗi lấy vị trí", Toast.LENGTH_SHORT).show() }
+    }
+    val permLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { r ->
+        if (r.values.any { it }) locate() else Toast.makeText(ctx, "Cần cấp quyền vị trí", Toast.LENGTH_SHORT).show()
+    }
+    val parsed = parseCoords(coord)
+    viewer?.let { ImageViewer(it.first, it.second) { viewer = null } }
     BackHandler(onBack = close)
     Scaffold(topBar = { TopAppBar(
         title = { Text(if (id > 0) "Sửa ghi chú" else "Thêm đường") },
         navigationIcon = { IconButton(close) { Icon(Icons.Default.ArrowBack, null) } },
-        actions = { IconButton({ if (name.isNotBlank()) vm.save(id, name, house, note, tags, images, close) }) { Icon(Icons.Default.Check, "Lưu") } }
+        actions = { IconButton({ if (name.isNotBlank() && (coord.isBlank() || parsed != null)) vm.save(id, name, house, note, tags, parsed?.first, parsed?.second, images, close) }) { Icon(Icons.Default.Check, "Lưu") } }
     ) }) { pad ->
         Column(Modifier.padding(pad).padding(12.dp).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(12.dp)) {
             OutlinedTextField(name, { name = it }, Modifier.fillMaxWidth(), label = { Text("Tên đường *") }, singleLine = true)
             OutlinedTextField(house, { house = it }, Modifier.fillMaxWidth(), label = { Text("Số nhà") }, singleLine = true)
             OutlinedTextField(note, { note = it }, Modifier.fillMaxWidth().heightIn(min = 120.dp), label = { Text("Ghi chú") })
+
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                OutlinedTextField(coord, { coord = it }, Modifier.weight(1f), label = { Text("Tọa độ GPS (vĩ độ, kinh độ)") },
+                    singleLine = true, isError = coord.isNotBlank() && parsed == null)
+                if (locating) CircularProgressIndicator(Modifier.padding(12.dp).size(24.dp))
+                else IconButton({ permLauncher.launch(arrayOf(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION)) }) {
+                    Icon(Icons.Default.MyLocation, "Lấy vị trí hiện tại")
+                }
+            }
+            if (parsed != null) OutlinedButton({ openMaps(ctx, parsed.first, parsed.second, name.ifBlank { "Vị trí" }) }) {
+                Icon(Icons.Default.Map, null); Spacer(Modifier.width(8.dp)); Text("Mở Google Maps")
+            }
 
             Text("Hashtag", style = MaterialTheme.typography.titleSmall)
             FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -142,9 +202,9 @@ fun EditScreen(vm: MainViewModel, id: Long, close: () -> Unit) {
                         Icon(Icons.Default.AddPhotoAlternate, "Thêm ảnh")
                     }
                 }
-                items(images.toList()) { p ->
+                itemsIndexed(images.toList()) { i, p ->
                     Box {
-                        AsyncImage(p, null, Modifier.size(96.dp).clip(RoundedCornerShape(8.dp)), contentScale = ContentScale.Crop)
+                        AsyncImage(p, null, Modifier.size(96.dp).clip(RoundedCornerShape(8.dp)).clickable { viewer = images.toList() to i }, contentScale = ContentScale.Crop)
                         IconButton({ images.remove(p) }, Modifier.align(Alignment.TopEnd).size(28.dp)) { Icon(Icons.Default.Cancel, "Bỏ ảnh") }
                     }
                 }

@@ -2,6 +2,8 @@ package com.driver.notes
 
 import android.content.Context
 import androidx.room.*
+import androidx.room.migration.Migration
+import androidx.sqlite.db.SupportSQLiteDatabase
 import kotlinx.coroutines.flow.Flow
 
 @Entity
@@ -11,6 +13,8 @@ data class Street(
     val houseNumber: String = "",
     val note: String = "",
     val tags: String = "",              // các hashtag, ngăn cách bằng dấu phẩy
+    val lat: Double? = null,
+    val lng: Double? = null,
     val updatedAt: Long = System.currentTimeMillis()
 ) { fun tagList() = tags.split(",").filter { it.isNotBlank() } }
 
@@ -36,13 +40,20 @@ interface StreetDao {
     @Query("DELETE FROM StreetImage WHERE streetId=:id") suspend fun clearImages(id: Long)
 }
 
-@Database(entities = [Street::class, StreetImage::class], version = 1, exportSchema = false)
+val MIGRATION_1_2 = object : Migration(1, 2) {
+    override fun migrate(db: SupportSQLiteDatabase) {
+        db.execSQL("ALTER TABLE Street ADD COLUMN lat REAL")
+        db.execSQL("ALTER TABLE Street ADD COLUMN lng REAL")
+    }
+}
+
+@Database(entities = [Street::class, StreetImage::class], version = 2, exportSchema = false)
 abstract class AppDb : RoomDatabase() {
     abstract fun dao(): StreetDao
     companion object {
         @Volatile private var inst: AppDb? = null
         fun get(c: Context) = inst ?: synchronized(this) {
-            inst ?: Room.databaseBuilder(c.applicationContext, AppDb::class.java, "notes.db").build().also { inst = it }
+            inst ?: Room.databaseBuilder(c.applicationContext, AppDb::class.java, "notes.db").addMigrations(MIGRATION_1_2).build().also { inst = it }
         }
     }
 }
