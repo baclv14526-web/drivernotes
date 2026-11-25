@@ -16,6 +16,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -31,7 +32,8 @@ class MainActivity : ComponentActivity() {
         setContent {
             MaterialTheme {
                 var editId by rememberSaveable { mutableStateOf<Long?>(null) } // null = danh sách, 0 = thêm mới
-                if (editId == null) ListScreen(vm) { editId = it } else EditScreen(vm, editId!!) { editId = null }
+                val cur = editId
+                if (cur == null) ListScreen(vm) { editId = it } else EditScreen(vm, cur) { editId = null }
             }
         }
     }
