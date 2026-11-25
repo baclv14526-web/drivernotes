@@ -1,0 +1,93 @@
+name: Build & Release Signed APK
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-release:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17 (có sẵn keytool)
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Setup Gradle 8.14 (with caching)
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.14'
+          cache-read-only: false
+
+      # Tự tạo keystore mới cho MỖI lần build, không cần secret nào.
+      # Mật khẩu sinh ngẫu nhiên, chỉ tồn tại trong lần chạy này.
+      - name: Tự tạo keystore để ký APK
+        run: |
+          set -e
+          KS_FILE="${{ github.workspace }}/release.keystore.jks"
+          KS_PW=$(openssl rand -base64 32 | tr -dc 'A-Za-z0-9' | head -c 24)
+          K_ALIAS="driver_notes"
+
+          echo "::add-mask::$KS_PW"
+
+          keytool -genkeypair -v \
+            -keystore "$KS_FILE" \
+            -alias "$K_ALIAS" \
+            -keyalg RSA -keysize 2048 -validity 10000 \
+            -storepass "$KS_PW" -keypass "$KS_PW" \
+            -dname "CN=DriverNotes, OU=Personal, O=DriverNotes, L=HaNoi, S=HaNoi, C=VN"
+
+          {
+            echo "KEYSTORE_PATH=$KS_FILE"
+            echo "KEYSTORE_PASSWORD=$KS_PW"
+            echo "KEY_ALIAS=$K_ALIAS"
+            echo "KEY_PASSWORD=$KS_PW"
+          } >> "$GITHUB_ENV"
+
+      - name: Build signed release APK
+        env:
+          BUILD_VERSION_CODE: ${{ github.run_number }}
+          BUILD_VERSION_NAME: "1.0.${{ github.run_number }}"
+        run: gradle assembleRelease --no-daemon --build-cache
+
+      - name: Xóa keystore khỏi runner
+        if: always()
+        run: rm -f release.keystore.jks
+
+      - name: Đổi tên APK
+        run: |
+          mkdir -p out
+          cp app/build/outputs/apk/release/app-release.apk out/DriverNotes-v1.0.${{ github.run_number }}.apk
+
+      - name: Upload build artifact (backup)
+        uses: actions/upload-artifact@v4
+        with:
+          name: DriverNotes-apk-run${{ github.run_number }}
+          path: out/*.apk
+
+      - name: Publish to GitHub Releases
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: latest
+          name: "Sổ tay tài xế - build #${{ github.run_number }}"
+          body: |
+            APK đã ký (chữ ký tự sinh mới cho lần build này).
+            Build từ commit: ${{ github.sha }}
+
+            **Cách cài:** mở link .apk bên dưới bằng trình duyệt trên điện thoại,
+            tải về rồi mở file để cài (lần đầu cần bật "Cho phép cài đặt
+            từ nguồn không xác định").
+
+            ⚠️ Mỗi lần build dùng chữ ký mới, nên nếu máy đã cài bản trước,
+            cần **gỡ bản cũ** rồi mới cài bản này (không cài đè được).
+          files: out/*.apk
+          make_latest: true
