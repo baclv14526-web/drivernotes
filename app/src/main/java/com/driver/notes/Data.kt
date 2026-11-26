@@ -15,6 +15,7 @@ data class Street(
     val tags: String = "",              // các hashtag, ngăn cách bằng dấu phẩy
     val lat: Double? = null,
     val lng: Double? = null,
+    val type: String = "road",          // khóa của PlaceType
     val updatedAt: Long = System.currentTimeMillis()
 ) { fun tagList() = tags.split(",").filter { it.isNotBlank() } }
 
@@ -33,6 +34,7 @@ data class StreetWithImages(
 interface StreetDao {
     @Transaction @Query("SELECT * FROM Street") fun all(): Flow<List<StreetWithImages>>
     @Transaction @Query("SELECT * FROM Street WHERE id=:id") suspend fun get(id: Long): StreetWithImages?
+    @Query("SELECT * FROM Street") suspend fun list(): List<Street>
     @Insert suspend fun insert(s: Street): Long
     @Update suspend fun update(s: Street)
     @Delete suspend fun delete(s: Street)
@@ -47,13 +49,19 @@ val MIGRATION_1_2 = object : Migration(1, 2) {
     }
 }
 
-@Database(entities = [Street::class, StreetImage::class], version = 2, exportSchema = false)
+val MIGRATION_2_3 = object : Migration(2, 3) {
+    override fun migrate(db: SupportSQLiteDatabase) {
+        db.execSQL("ALTER TABLE Street ADD COLUMN type TEXT NOT NULL DEFAULT 'road'")
+    }
+}
+
+@Database(entities = [Street::class, StreetImage::class], version = 3, exportSchema = false)
 abstract class AppDb : RoomDatabase() {
     abstract fun dao(): StreetDao
     companion object {
         @Volatile private var inst: AppDb? = null
         fun get(c: Context) = inst ?: synchronized(this) {
-            inst ?: Room.databaseBuilder(c.applicationContext, AppDb::class.java, "notes.db").addMigrations(MIGRATION_1_2).build().also { inst = it }
+            inst ?: Room.databaseBuilder(c.applicationContext, AppDb::class.java, "notes.db").addMigrations(MIGRATION_1_2, MIGRATION_2_3).build().also { inst = it }
         }
     }
 }
