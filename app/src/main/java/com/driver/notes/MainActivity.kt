@@ -57,6 +57,7 @@ class MainActivity : ComponentActivity() {
 }
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
+@SuppressLint("MissingPermission")
 @Composable
 fun ListScreen(vm: MainViewModel, themeMode: Int, onTheme: () -> Unit, open: (Long) -> Unit) {
     val items by vm.items.collectAsStateWithLifecycle()
@@ -64,6 +65,7 @@ fun ListScreen(vm: MainViewModel, themeMode: Int, onTheme: () -> Unit, open: (Lo
     val sort by vm.sort.collectAsStateWithLifecycle()
     val tag by vm.tagFilter.collectAsStateWithLifecycle()
     val typeF by vm.typeFilter.collectAsStateWithLifecycle()
+    val loc by vm.userLoc.collectAsStateWithLifecycle()
     var menu by remember { mutableStateOf(false) }
     val ctx = LocalContext.current
     var viewer by remember { mutableStateOf<Pair<List<String>, Int>?>(null) }
@@ -75,6 +77,19 @@ fun ListScreen(vm: MainViewModel, themeMode: Int, onTheme: () -> Unit, open: (Lo
     val importLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         uri?.let { vm.importData(it) { m -> Toast.makeText(ctx, m, Toast.LENGTH_LONG).show() } }
     }
+    val fetchLoc = {
+        LocationServices.getFusedLocationProviderClient(ctx).getCurrentLocation(Priority.PRIORITY_HIGH_ACCURACY, null)
+            .addOnSuccessListener { l ->
+                if (l != null) vm.userLoc.value = l.latitude to l.longitude
+                else Toast.makeText(ctx, "Chưa lấy được vị trí, hãy bật GPS", Toast.LENGTH_SHORT).show()
+            }
+            .addOnFailureListener { Toast.makeText(ctx, "Lỗi lấy vị trí", Toast.LENGTH_SHORT).show() }
+        Unit
+    }
+    val locPerm = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { r ->
+        if (r.values.any { it }) fetchLoc()
+        else { Toast.makeText(ctx, "Cần cấp quyền vị trí để sắp xếp theo khoảng cách", Toast.LENGTH_SHORT).show(); vm.sort.value = Sort.NEWEST }
+    }
     Scaffold(
         topBar = { TopAppBar(title = { Text("Sổ tay tài xế") }, actions = {
             IconButton(onTheme) {
@@ -83,7 +98,10 @@ fun ListScreen(vm: MainViewModel, themeMode: Int, onTheme: () -> Unit, open: (Lo
             Box {
                 TextButton(onClick = { menu = true }) { Icon(Icons.Default.Sort, null); Spacer(Modifier.width(4.dp)); Text(sort.label) }
                 DropdownMenu(menu, { menu = false }) {
-                    Sort.values().forEach { s -> DropdownMenuItem(text = { Text(s.label) }, onClick = { vm.sort.value = s; menu = false }) }
+                    Sort.values().forEach { s -> DropdownMenuItem(text = { Text(s.label) }, onClick = {
+                        vm.sort.value = s; menu = false
+                        if (s == Sort.NEAR) locPerm.launch(arrayOf(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION))
+                    }) }
                 }
             }
             Box {
@@ -134,6 +152,14 @@ fun ListScreen(vm: MainViewModel, themeMode: Int, onTheme: () -> Unit, open: (Lo
                                     }
                                     Text(w.street.name, style = MaterialTheme.typography.titleMedium)
                                     if (w.street.houseNumber.isNotBlank()) Text("Số nhà: ${w.street.houseNumber}", style = MaterialTheme.typography.bodySmall)
+                                    if (sort == Sort.NEAR) {
+                                        val sla = w.street.lat; val sln = w.street.lng
+                                        if (sla != null && sln != null && loc != null)
+                                            Text("Cách bạn " + formatDistance(distanceMeters(loc!!.first, loc!!.second, sla, sln)),
+                                                style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
+                                        else if (sla == null || sln == null)
+                                            Text("Chưa có tọa độ GPS", style = MaterialTheme.typography.labelSmall)
+                                    }
                                 }
                                 val la = w.street.lat; val ln = w.street.lng
                                 if (la != null && ln != null) IconButton({ openMaps(ctx, la, ln, w.street.name) }) { Icon(Icons.Default.Map, "Mở Google Maps") }

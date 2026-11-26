@@ -18,7 +18,7 @@ import org.json.JSONObject
 import java.text.Normalizer
 import java.util.UUID
 
-enum class Sort(val label: String) { NEWEST("Mới nhất"), NAME("Tên A→Z"), HOUSE("Số nhà"), TYPE("Loại") }
+enum class Sort(val label: String) { NEWEST("Mới nhất"), NAME("Tên A→Z"), TYPE("Loại"), NEAR("Gần tôi nhất") }
 
 val PRESET_TAGS = listOf("Đang sửa chữa", "Hỏng đèn giao thông", "Tắc đường", "Ngập nước",
     "Cấm đường", "Đường một chiều", "Đường hẹp", "Cấm rẽ trái", "Cấm rẽ phải",
@@ -36,19 +36,32 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     val tagFilter = MutableStateFlow<String?>(null)
     val typeFilter = MutableStateFlow<String?>(null)
 
+    /** Vị trí GPS hiện tại của người dùng (vĩ độ, kinh độ), dùng cho sắp xếp "Gần tôi nhất". */
+    val userLoc = MutableStateFlow<Pair<Double, Double>?>(null)
+
+    private data class Filters(val q: String, val sort: Sort, val tag: String?, val type: String?, val loc: Pair<Double, Double>?)
+
     val items: StateFlow<List<StreetWithImages>> =
-        combine(dao.all(), query, sort, tagFilter, typeFilter) { all, q, s, tag, ty ->
-            val k = q.fold().trim()
-            all.filter { w ->
-                val st = w.street
-                (tag == null || tag in st.tagList()) && (ty == null || st.type == ty) &&
-                    (k.isEmpty() || listOf(st.name, st.houseNumber, st.note, st.tags, PlaceType.fromKey(st.type).label).any { it.fold().contains(k) })
-            }.sortedWith(when (s) {
+        combine(dao.all(), combine(query, sort, tagFilter, typeFilter, userLoc) { q, s, t, ty, l -> Filters(q, s, t, ty, l) }) { all, f ->
+            val k = f.q.fold().trim()
+            val cmp: Comparator<StreetWithImages> = when (f.sort) {
                 Sort.NEWEST -> compareByDescending { it.street.updatedAt }
                 Sort.NAME -> compareBy { it.street.name.fold() }
-                Sort.HOUSE -> compareBy { it.street.houseNumber.fold() }
                 Sort.TYPE -> compareBy<StreetWithImages>({ PlaceType.fromKey(it.street.type).ordinal }, { it.street.name.fold() })
-            })
+                Sort.NEAR -> {
+                    val l = f.loc
+                    if (l == null) compareBy { it.street.name.fold() }
+                    else compareBy<StreetWithImages> { w ->
+                        val la = w.street.lat; val ln = w.street.lng
+                        if (la == null || ln == null) Double.MAX_VALUE else distanceMeters(l.first, l.second, la, ln)
+                    }.thenBy { it.street.name.fold() }
+                }
+            }
+            all.filter { w ->
+                val st = w.street
+                (f.tag == null || f.tag in st.tagList()) && (f.type == null || st.type == f.type) &&
+                    (k.isEmpty() || listOf(st.name, st.houseNumber, st.note, st.tags, PlaceType.fromKey(st.type).label).any { it.fold().contains(k) })
+            }.sortedWith(cmp)
         }.flowOn(Dispatchers.Default).stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
     suspend fun load(id: Long) = dao.get(id)
